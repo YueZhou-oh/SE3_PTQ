@@ -1,0 +1,62 @@
+# Configuration for inference on SE(3) diffusion experiments.
+defaults:
+  - quant
+
+quant:
+  ptq: True
+  quant_mode: qdiff
+  weight_bit: 8
+  quant_act: True
+  act_bit: 8
+  split: True
+  a_sym: True
+  skip_type: quad
+  resume: False
+  resume_w: False    # True    # False
+  sm_abit: 16
+  skip_grid: False
+  skip_save: False
+  cali_batch_size: 4 #16
+  cali_iters: 1000 #10000
+  cali_iters_a: 10 #2500
+  # learning rate for LSQ
+  cali_lr: 4e-4
+  # L_p norm minimization for LSQ
+  cali_p: 2.4
+  cali_ckpt: ckpt/quant/16D_07M_2024Y_20h_18m_43s
+  running_stat: True
+
+
+inference:
+  name: null
+  gpu_id: null  # CUDA GPU to use
+  seed: 123
+
+  # Directory of software, weights, and outputs.
+  pt_hub_dir: ./.cache/torch/
+  pmpnn_dir: ProteinMPNN
+  output_dir: ./quant_sample_outputs/
+
+  # Path to model weights.
+  weights_path: ./weights/paper_weights.pth
+
+  diffusion:
+    # Number of steps.
+    num_t: 500
+    # Analogous to sampling temperature.
+    noise_scale: 0.1
+    # Final t.
+    min_t: 0.01
+
+  samples:
+    # Number of backbone samples per sequence length.
+    samples_per_length: 10
+    # Number of ESMFdold samples per backbone sample.
+    seq_per_sample: 8
+    # Minimum sequence length to sample.
+    min_length: 100
+    # Maximum sequence length to sample.
+    max_length: 500
+    # gap between lengths to sample. i.e. this script will sample all lengths
+    # in range(min_length, max_length, length_step)
+    length_step: 5
