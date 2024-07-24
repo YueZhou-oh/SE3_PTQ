@@ -309,7 +309,7 @@ class PdbDataset(data.Dataset):
         return all_data
     
     def return_initializing_data_dict(self):
-        num = 8
+        num = 2
         tmp = self.__getitem__(0)
         init_data = {}
         max_length = 0

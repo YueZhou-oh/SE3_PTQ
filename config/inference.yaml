@@ -1,31 +1,6 @@
 # Configuration for inference on SE(3) diffusion experiments.
 defaults:
-  - quant
-
-quant:
-  ptq: True
-  quant_mode: qdiff
-  weight_bit: 8
-  quant_act: False    #True
-  act_bit: 8
-  split: True
-  a_sym: True
-  skip_type: quad
-  resume: False
-  resume_w: False    # True    # False
-  sm_abit: 16
-  skip_grid: False
-  skip_save: False
-  cali_batch_size: 4 #16
-  cali_iters: 1000 #10000
-  cali_iters_a: 10 #2500
-  # learning rate for LSQ
-  cali_lr: 4e-4
-  # L_p norm minimization for LSQ
-  cali_p: 2.4
-  cali_ckpt: ckpt/quant/23D_07M_2024Y_15h_23m_00s # ckpt/quant/16D_07M_2024Y_20h_18m_43s
-  running_stat: False   # True
-
+  - base
 
 inference:
   name: null
@@ -34,11 +9,11 @@ inference:
 
   # Directory of software, weights, and outputs.
   pt_hub_dir: ./.cache/torch/
-  pmpnn_dir: ProteinMPNN
-  output_dir: ./quant_sample_outputs_best/
+  pmpnn_dir: ./ProteinMPNN/
+  output_dir: ./inference_outputs_best/
 
   # Path to model weights.
-  weights_path: ./weights/best_weights_cpu.pth    #./weights/paper_weights.pth
+  weights_path: ./weights/best_weights_cpu.pth # ./weights/paper_weights.pth   # ./weights/best_weights_cpu.pth
 
   diffusion:
     # Number of steps.

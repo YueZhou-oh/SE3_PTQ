@@ -58,7 +58,7 @@ class UniformAffineQuantizer(nn.Module):
         self.leaf_param = leaf_param
         self.channel_wise = channel_wise
         self.scale_method = scale_method
-        self.running_stat = False
+        self.running_stat = False               # for activation diff
         self.always_zero = always_zero
         if self.leaf_param:
             self.x_min, self.x_max = None, None

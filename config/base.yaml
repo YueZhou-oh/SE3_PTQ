@@ -7,27 +7,21 @@ quant:
   ptq: True
   quant_mode: qdiff
   weight_bit: 8
-  w_lr: 0.02     # 0.01
-  quant_act: False  #True
+  quant_act: True
   act_bit: 8
   split: True
   a_sym: True
   skip_type: quad
   resume: False
-  resume_w: False    # True    # False
+  resume_w: False
   sm_abit: 8
-  cali_batch_size: 2 #16
-  cali_iters: 20000 #10000
-  cali_iters_a: 10 #2500
-  # learning rate for LSQ
-  cali_lr: 4e-4
-  # L_p norm minimization for LSQ
-  cali_p: 2.4
-  cali_ckpt: #ckpt/quant/10D_07M_2024Y_17h_11m_46s/ckpt.pth
+  cali_batch_size: 4
+  cali_iters: 2000
+  cali_iters_a: 500
 
 data:
   # CSV for path and metadata to training examples.
-  csv_path: ./processed_pdb_quant/metadata.csv
+  csv_path: ./processed_pdb/metadata.csv
   cluster_path: ./clusters-by-entity-30.txt
   filtering:
     max_len: 512
@@ -90,7 +84,7 @@ model:
 
 experiment:
   # Experiment metadata
-  name: quant
+  name: baseline
   run_id: null
 
   #training mode
@@ -104,7 +98,7 @@ experiment:
   num_epoch: 500_000
   learning_rate: 0.0001
   max_squared_res: 500000
-  prefetch_factor: 200
+  prefetch_factor: 100
   use_gpu: True
   num_gpus: 1
   # 2
@@ -121,9 +115,9 @@ experiment:
   early_ckpt: True
 
   # Checkpoint directory to warm start from.
-  warm_start: ./weights/
+  warm_start: null
   use_warm_start_conf: False
-  ckpt_dir: #./ckpt/
+  ckpt_dir: ./ckpt/
 
   # Loss weights.
   trans_loss_weight: 1.0

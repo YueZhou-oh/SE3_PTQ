@@ -266,7 +266,7 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
             idx = torch.randperm(cached_inps.size(0))[:batch_size]
             cur_inp = cached_inps[idx].to(device)
             cur_out = cached_outs[idx].to(device)
-        # TODO cur_grad is for what
+        # TODO cur_grad is for what         # 一阶展开误差
         # cur_grad = cached_grads[idx].to(device) if opt_mode != 'mse' else None
         cur_grad = None
         
