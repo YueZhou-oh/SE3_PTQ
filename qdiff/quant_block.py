@@ -19,18 +19,17 @@ from ldm.modules.attention import exists, default
 from ddim.models.diffusion import ResnetBlock, AttnBlock, nonlinearity
 
 from torch.nn import TransformerEncoderLayer, MultiheadAttention, TransformerEncoder, Sequential
-from model.score_network import Embedder
-from model.ipa_pytorch import InvariantPointAttention, permute_final_dims, flatten_final_dims, StructureModuleTransition, EdgeTransition, TorsionAngles
+from model.quant_score_network import Embedder
+from model.quant_ipa_pytorch import InvariantPointAttention, permute_final_dims, flatten_final_dims, StructureModuleTransition, EdgeTransition, TorsionAngles
 from data import utils as du
 
 logger = logging.getLogger(__name__)
 
 def multi_head_self_attn_forward(self, x, xk, xv, attn_mask=None,
                            key_padding_mask=None,
-                           need_weights=False):
+                           need_weights=False):         # getInpOut also goes here
     dropout_mhsa = 0.0
     h = self.num_heads
-    self.scale = 1.0 / math.sqrt(x.shape[-1])
     
     # print('self._qkv_same_embed_dim:', self._qkv_same_embed_dim)  # True
     if not self._qkv_same_embed_dim:
@@ -66,56 +65,72 @@ def multi_head_self_attn_forward(self, x, xk, xv, attn_mask=None,
     #         raise RuntimeError(f"attn_mask's dimension {attn_mask.dim()} is not supported")
 
     # merge key padding and attention masks
-    if key_padding_mask is not None:
-        (bsz, src_len) = key_padding_mask.shape
-        key_padding_mask = key_padding_mask.view(bsz, 1, 1, src_len).   \
-            expand(-1, self.num_heads, -1, -1).reshape(bsz * self.num_heads, 1, src_len)
-        if attn_mask is None:
-            attn_mask = key_padding_mask
-        elif attn_mask.dtype == torch.bool:
-            attn_mask = attn_mask.logical_or(key_padding_mask)
-        else:
-            attn_mask = attn_mask.masked_fill(key_padding_mask, float("-inf"))
 
-    if attn_mask is not None and attn_mask.dtype == torch.bool:
-        new_attn_mask = torch.zeros_like(attn_mask, dtype=q.dtype)
-        new_attn_mask.masked_fill_(attn_mask, float("-inf"))
-        attn_mask = new_attn_mask
+    # if key_padding_mask is not None:
+    #     (bsz, src_len) = key_padding_mask.shape
+    #     key_padding_mask = key_padding_mask.view(bsz, 1, 1, src_len).   \
+    #         expand(-1, self.num_heads, -1, -1).reshape(bsz * self.num_heads, 1, src_len)
+    #     if attn_mask is None:
+    #         attn_mask = key_padding_mask
+    #     elif attn_mask.dtype == torch.bool:
+    #         attn_mask = attn_mask.logical_or(key_padding_mask)
+    #     else:
+    #         attn_mask = attn_mask.masked_fill(key_padding_mask, float("-inf"))
 
+    # if attn_mask is not None and attn_mask.dtype == torch.bool:
+    #     new_attn_mask = torch.zeros_like(attn_mask, dtype=q.dtype)
+    #     new_attn_mask.masked_fill_(attn_mask, float("-inf"))
+    #     attn_mask = new_attn_mask
+    
+    self.scale = 1.0 / math.sqrt(q.shape[-1])
     if self.use_act_quant:
         q_scaled = self.act_quantizer_q(q) * self.scale
         k = self.act_quantizer_k(k)
         # sim = einsum('b i d, b j d -> b i j', quant_q, quant_k) * self.scale
     else:
-        q_scaled = q
+        q_scaled = q * self.scale   # fix BUG
         # sim = einsum('b i d, b j d -> b i j', q, k) * self.scale
 
-    if attn_mask is not None:
-        attn_output_weights = torch.baddbmm(attn_mask, q_scaled, k.transpose(-2, -1))
-    else:
-        attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
-        
+    # fix BUG, no need of badbmm, ref. https://pytorch.org/docs/2.0/generated/torch.baddbmm.html#torch.baddbmm
+    # if attn_mask is not None:       
+    #     attn_output_weights = torch.baddbmm(attn_mask, q_scaled, k.transpose(-2, -1))
+    # else:
+    #     attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
+    
+    attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
+    # add masked for filled residue, no real attention exist
+    if attn_mask is not None:        # fill with -inf
+        if not attn_mask.shape == attn_output_weights.shape:
+            attn_mask = torch.tile(attn_mask[:,:, None] * attn_mask[:, None, :], (h, 1, 1))
+
+        attn_output_weights = attn_output_weights.masked_fill(attn_mask==0, -10000.)
+    # exit(0)
     # if exists(attn_mask):
     #     attn_mask = rearrange(attn_mask, 'b ... -> b (...)')
     #     max_neg_value = -th.finfo(sim.dtype).max
     #     attn_mask = repeat(attn_mask, 'b j -> (b h) () j', h=h)
     #     sim.masked_fill_(~attn_mask, max_neg_value)
-
+    
     # attention, what we cannot get enough of
     attn = attn_output_weights.softmax(dim=-1)
+    # print(attn[0][0], attn[-1][-1])
 
     if self.use_act_quant:
-        out = einsum('b i j, b j d -> b i d', self.act_quantizer_w(attn), self.act_quantizer_v(v))
+        out = torch.bmm(self.act_quantizer_w(attn), self.act_quantizer_v(v))
     else:
-        out = einsum('b i j, b j d -> b i d', attn, v)
+        out = torch.bmm(attn, v)
     out = rearrange(out, '(b h) n d -> b n (h d)', h=h)
-    if dropout_mhsa > 0.0:
-        out = nn.Dropout(out, p = dropout_mhsa)
+    # if dropout_mhsa > 0.0:
+    #     out = nn.Dropout(out, p = dropout_mhsa)
     output = self.out_proj(out)
     # output = F.linear(out, self.out_proj.weight, self.out_proj.bias)
     
+    if attn_mask is not None:
+        output = output.masked_fill(torch.tile(attn_mask[:output.shape[0], :, 0][..., None], (1, 1, output.shape[-1])) == 0, 0)
+            
+    # print('output:', output[0])
     # print('============goes self-defined forward?????? yes====================')
-        
+    # print(output)
     return output   # , None
 
 class BaseQuantBlock(nn.Module):
@@ -152,7 +167,7 @@ class QuantEmbedder(BaseQuantBlock):
         self.timestep_embedder = emb.timestep_embedder
         self.index_embedder = emb.index_embedder
         self._cross_concat = emb._cross_concat
-        self.use_weight_quant = False
+        self.use_weight_quant = True
         self.use_act_quant = False
         self.weight_quant_params = weight_quant_params
         self.act_quant_params = act_quant_params
@@ -163,7 +178,7 @@ class QuantEmbedder(BaseQuantBlock):
             t,
             fixed_mask,
             self_conditioning_ca,):
-        
+        # print(self.name)
         num_batch, num_res = seq_idx.shape
         node_feats = []
         fixed_mask = fixed_mask[..., None]
@@ -229,13 +244,14 @@ class QuantStructureModuleTransition(BaseQuantBlock):
         self.linear_3 = smt.linear_3
         self.relu = smt.relu
         self.ln = smt.ln    
-        self.use_weight_quant = False
+        self.use_weight_quant = True
         self.use_act_quant = False
         self.weight_quant_params = weight_quant_params
         self.act_quant_params = act_quant_params
         # self.disable_act_quant = True
         
     def forward(self, s: torch.Tensor) -> torch.Tensor:
+        # print(self.name)
         s_initial = s
         s = self.linear_1(s)
         s = self.relu(s)
@@ -262,13 +278,14 @@ class QuantEdgeTransition(BaseQuantBlock):
         self.trunk = et.trunk
         self.final_layer = et.final_layer
         self.layer_norm = et.layer_norm
-        self.use_weight_quant = False
+        self.use_weight_quant = True
         self.use_act_quant = False
         self.weight_quant_params = weight_quant_params
         self.act_quant_params = act_quant_params
         # self.disable_act_quant = True
         
     def forward(self, node_embed, edge_embed):
+        # print(self.name)
         node_embed = self.initial_embed(node_embed)
         batch_size, num_res, _ = node_embed.shape
         edge_bias = torch.cat([
@@ -317,13 +334,14 @@ class QuantTorsionAngles(BaseQuantBlock):
         self.linear_2 = ta.linear_2
         self.linear_final = ta.linear_final
         self.relu = ta.relu
-        self.use_weight_quant = False
+        self.use_weight_quant = True
         self.use_act_quant = False
         self.weight_quant_params = weight_quant_params
         self.act_quant_params = act_quant_params
         # self.disable_act_quant = True
         
     def forward(self, s: torch.Tensor):
+        # print(self.name)
         s_initial = s
         s = self.linear_1(s)
         s = self.relu(s)
@@ -353,7 +371,7 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
     def __init__(self, ipa: InvariantPointAttention, act_quant_params: dict = {}, weight_quant_params: dict={}, sm_abit: int = 8):
         super().__init__(act_quant_params)
         self.name = 'quantipa'
-        self.use_weight_quant = False
+        self.use_weight_quant = True
         self.use_act_quant = False
         self.weight_quant_params = weight_quant_params
         self.act_quant_params = act_quant_params
@@ -391,13 +409,14 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
             z = _z_reference_list
         else:
             z = [z]
-
+        # print(self.name)
         #######################################
         # Generate scalar and point activations
         #######################################
         # [*, N_res, H * C_hidden]
-        q = self.linear_q(s)
-        kv = self.linear_kv(s)
+        edge_mask = mask[..., None] * mask[..., None, :]
+        q = self.linear_q(s) * mask[..., None]
+        kv = self.linear_kv(s) * mask[..., None]
         # print('======goes ipa============')
         # print('q, kv: ', torch.isnan(q).any(), torch.isnan(kv).any())
 
@@ -406,12 +425,13 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
         # print(q.shape)  # torch.Size([1, 100, 8, 256])
         # [*, N_res, H, 2 * C_hidden]
         kv = kv.view(kv.shape[:-1] + (self.no_heads, -1))
+        # print(q.shape, kv.shape)    # torch.Size([2, 512, 8, 256]) torch.Size([2, 512, 8, 512])
 
         # [*, N_res, H, C_hidden]
         k, v = torch.split(kv, self.c_hidden, dim=-1)
 
         # [*, N_res, H * P_q * 3]
-        q_pts = self.linear_q_points(s)
+        q_pts = self.linear_q_points(s) * mask[..., None]
 
         # This is kind of clunky, but it's how the original does it
         # [*, N_res, H * P_q, 3]
@@ -427,7 +447,7 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
         )
         # print(q_pts.shape)  # torch.Size([1, 100, 8, 8, 3])
         # [*, N_res, H * (P_q + P_v) * 3]
-        kv_pts = self.linear_kv_points(s)
+        kv_pts = self.linear_kv_points(s) * mask[..., None]
 
         # [*, N_res, H * (P_q + P_v), 3]
         kv_pts = torch.split(kv_pts, kv_pts.shape[-1] // 3, dim=-1)
@@ -447,8 +467,7 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
         # Compute attention scores
         ##########################
         # [*, N_res, N_res, H]
-        b = self.linear_b(z[0])
-        # print(b.shape)  # torch.Size([1, 100, 100, 8])
+        b = self.linear_b(z[0]) * edge_mask[..., None]
         
         if(_offload_inference):
             z[0] = z[0].cpu()
@@ -534,7 +553,7 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
             z[0] = z[0].to(o_pt.device)
 
         # [*, N_res, H, C_z // 4]
-        pair_z = self.down_z(z[0]).to(dtype=a.dtype)
+        pair_z = self.down_z(z[0]).to(dtype=a.dtype) * edge_mask[..., None]
         o_pair = torch.matmul(a.transpose(-2, -3), pair_z)
         # print(pair_z.shape, o_pair.shape)       # torch.Size([1, 100, 100, 32]) torch.Size([1, 100, 8, 32])
         # [*, N_res, H * C_z // 4]
@@ -553,8 +572,8 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
             torch.cat(
                 o_feats, dim=-1
             ).to(dtype=z[0].dtype), split = split
-        )
-        # print(s.shape)      # torch.Size([1, 100, 256])
+            ) * mask[..., None]
+
         # print('==========finish ipa===============')
         return s    
         
@@ -570,7 +589,7 @@ class QuantTransformerEncoderLayer(BaseQuantBlock):
     def __init__(self, enc: TransformerEncoderLayer, act_quant_params: dict = {}, weight_quant_params: dict={},
             sm_abit: int = 8):
         super().__init__(act_quant_params)
-        self.use_weight_quant = False
+        self.use_weight_quant = True
         self.use_act_quant = False
         self.name = 'quanttel'
         self.self_attn = enc.self_attn
@@ -600,6 +619,7 @@ class QuantTransformerEncoderLayer(BaseQuantBlock):
         
         self.self_attn.forward = MethodType(multi_head_self_attn_forward, self.self_attn)
         self.self_attn.use_act_quant = False
+        self.self_attn.use_weight_quant = True
         
         self._qkv_same_embed_dim = self.self_attn._qkv_same_embed_dim
         # assert self._qkv_same_embed_dim == True
@@ -620,23 +640,27 @@ class QuantTransformerEncoderLayer(BaseQuantBlock):
     def forward(self, src, src_mask: Optional[torch.Tensor],
                 src_key_padding_mask: Optional[torch.Tensor]) -> torch.Tensor:
                 # src_key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        
+        # print(self.name)
         # print('======goes tel==========')
         x = src
-        if self.norm_first:
+        if self.norm_first:         # False
             x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask)
             x = x + self._ff_block(self.norm2(x))
         else:
             x = self.norm1(x + self._sa_block(x, src_mask, src_key_padding_mask))
             x = self.norm2(x + self._ff_block(x))
-
+        
+        if len(src_mask.shape) == len(x.shape):
+            x *=  src_mask[x.shape[0], :, 0][..., None]
+        else:
+            x *= src_mask[..., None]
         return x
     
     def _sa_block(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor], 
                   key_padding_mask: Optional[torch.Tensor]) -> torch.Tensor:
         x = self.self_attn(x, x, x, attn_mask=attn_mask,
                            key_padding_mask=key_padding_mask,
-                           need_weights=False)
+                           need_weights=False)      # [0]  self impl only return one variable
         return self.dropout1(x)
     
     def _ff_block(self, x: torch.Tensor) -> torch.Tensor:
@@ -645,6 +669,7 @@ class QuantTransformerEncoderLayer(BaseQuantBlock):
     
     def set_quant_state(self, weight_quant: bool = False, act_quant: bool = False):
         self.self_attn.use_act_quant = act_quant
+        self.self_attn.use_weight_quant = weight_quant
 
         # setting weight quantization here does not affect actual forward pass
         self.use_weight_quant = weight_quant

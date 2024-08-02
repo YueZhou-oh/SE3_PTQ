@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from data import utils as du
 from data import all_atom
-from model import ipa_pytorch
+from model import quant_ipa_pytorch
 import functools as fn
 import os
 import numpy as np
@@ -183,7 +183,7 @@ class ScoreNetwork(nn.Module):
 
         self.embedding_layer = Embedder(model_conf)
         self.diffuser = diffuser
-        self.score_model = ipa_pytorch.IpaScore(model_conf, diffuser)
+        self.score_model = quant_ipa_pytorch.IpaScore(model_conf, diffuser)
 
     def _apply_mask(self, aatype_diff, aatype_0, diff_mask):
         return diff_mask * aatype_diff + (1 - diff_mask) * aatype_0

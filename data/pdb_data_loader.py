@@ -289,10 +289,11 @@ class PdbDataset(data.Dataset):
         for key in tmp.keys():      # are they valid with zero? TODO fixed_mask is all ones
             value = np.array(tmp[key])
             if len(tmp[key].shape) > 0:
-                if key == 'fixed_mask': # inverse
-                    all_data[key] = torch.ones((samples, max_length) + value.shape[1:])
-                else:
-                    all_data[key] = torch.zeros((samples, max_length) + value.shape[1:])
+                # if key == 'fixed_mask': # inverse
+                #     all_data[key] = torch.ones((samples, max_length) + value.shape[1:])
+                # else:
+                #     all_data[key] = torch.zeros((samples, max_length) + value.shape[1:])
+                all_data[key] = torch.zeros((samples, max_length) + value.shape[1:])
             else:
                 all_data[key] = torch.zeros(samples)
         

@@ -91,7 +91,7 @@ def save_inp_oup_data(cali_data, model: QuantModel, layer: Union[QuantModule, Ba
         
         # print('batch_data:', batch_data)
         node_mask = batch_data['res_mask'].type(torch.float32)
-        src_key_padding_mask = 1 - node_mask
+        attn_mask = node_mask
         
         cur_inp, cur_out = get_inp_out(batch_data) 
         # print('cur_inp:', len(cur_inp))    
@@ -135,7 +135,7 @@ def save_inp_oup_data(cali_data, model: QuantModel, layer: Union[QuantModule, Ba
                                         Rigid(cur_rigids._rots.to(device='cpu', dtype=torch.float32), cur_rigids._trans.cpu()), 
                                         cur_mask.cpu()), cur_out.cpu()))
         elif isinstance(layer, BaseQuantBlock) and layer.name == 'quanttel':    # transformerencoderlayer
-            cached_batches.append(((cur_inp.cpu(), src_key_padding_mask.cpu()), cur_out.cpu()))       # src_key_padding_mask=1 - node_mask
+            cached_batches.append(((cur_inp.cpu(), attn_mask.cpu()), cur_out.cpu()))       
         elif isinstance(layer, BaseQuantBlock) and layer.name == 'quantet':
             node, edge = cur_inp
             cached_batches.append(((node.cpu(), edge.cpu()), cur_out.cpu()))
@@ -350,7 +350,7 @@ class GetLayerInpOut:
         # exit(0)
         # if self.layer.name == 'quanttel':
         #     print(f'getinpout: {len(self.data_saver.input_store)}, shape: {self.data_saver.input_store[0].shape}')
-
+        # print('xxxxx:', len(self.data_saver.input_store))
         if isinstance(self.layer, BaseQuantBlock) and len(self.data_saver.input_store) > 1 and self.layer.name == 'quantipa':
             return (self.data_saver.input_store[0].detach(),  
                 self.data_saver.input_store[1].detach(), self.data_saver.input_store[2].stop_rot_gradient(), #.detach(),  stop gradient

@@ -670,6 +670,7 @@ class IpaScore(nn.Module):
         # exit(0)
         init_node_embed = init_node_embed * node_mask[..., None]
         node_embed = init_node_embed * node_mask[..., None]
+        # print('-------- goes here ----------')
         for b in range(self._ipa_conf.num_blocks):
             # print(f'======== {b} ==========')
             # print('node_embed:', torch.isnan(node_embed).any()) 
@@ -704,30 +705,33 @@ class IpaScore(nn.Module):
             #     seq_tfmr_in = pickle.load(f)[..., :node_mask.shape[1], :].to(node_mask.device)
             # with open('./debugs/train/encoder/node_mask.pkl', 'rb') as f:
             #     node_mask = pickle.load(f).to(node_mask.device)
-            # with open('./debugs/train/encoder2/cur_inp.pkl', 'rb') as f:
+            # with open('./debugs/train/encoder/cur_inp.pkl', 'rb') as f:
             #     cur_inp = pickle.load(f)
             
             # tmp = self.trunk[f'seq_tfmr_{b}'].layers[0](
-            #     cur_inp[0], src_key_padding_mask=1 - cur_inp[1])  
+            #     seq_tfmr_in, src_key_padding_mask=1 - node_mask)  
             # tmp2 = self.trunk[f'seq_tfmr_{b}'].layers[0](
             #     cur_inp[0].to(node_embed.device),)  
-            # with open('./debugs/train/encoder2/tmp.pkl', 'wb') as f:
-            #     pickle.dump(tmp, f)
-            
-            # print(tmp)
+            # with open('./debugs/train/encoder/tmp2.pkl', 'wb') as f:
+            #     pickle.dump(tmp2, f)
             # print('ok')
             # exit(0)
-            # src_key_padding_mask = 1-node_mask
+            src_key_padding_mask = 1-node_mask
             # print(node_mask)
-            # attn_mask = torch.tile(node_mask[:, :, None] * node_mask[:, None, :], (self._ipa_conf.seq_tfmr_num_heads, 1, 1))
+            attn_mask = torch.tile(node_mask[:, :, None] * node_mask[:, None, :], (self._ipa_conf.seq_tfmr_num_heads, 1, 1))
             # print('ipa_pytorch attn_mask:', attn_mask.shape)
             # tmp = self.trunk[f'seq_tfmr_{b}'].layers[0](
             #     seq_tfmr_in, src_mask=attn_mask, src_key_padding_mask=None)  
             # print(tmp)
             # exit(0)
- 
+            # TODO use different for inference
             seq_tfmr_out = self.trunk[f'seq_tfmr_{b}'](
-                seq_tfmr_in, src_key_padding_mask=1 - node_mask)    
+                seq_tfmr_in, mask = attn_mask, src_key_padding_mask=None)   
+            # seq_tfmr_out = self.trunk[f'seq_tfmr_{b}'](
+            #     seq_tfmr_in, src_key_padding_mask=1 - node_mask)    
+            # print(seq_tfmr_out)
+            # exit(0)
+            
             post_tmfr_out = self.trunk[f'post_tfmr_{b}'](seq_tfmr_out)
             node_embed = node_embed + post_tmfr_out * node_mask[..., None]
             node_embed = self.trunk[f'node_transition_{b}'](node_embed)

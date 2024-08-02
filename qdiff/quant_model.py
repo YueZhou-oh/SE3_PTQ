@@ -1,6 +1,6 @@
 import logging
 import torch.nn as nn
-from model.ipa_pytorch import TorsionAngles
+from model.quant_ipa_pytorch import TorsionAngles
 from qdiff.quant_block import get_specials, BaseQuantBlock
 from qdiff.quant_block import QuantBasicTransformerBlock, QuantResBlock
 from qdiff.quant_block import QuantQKMatMul, QuantSMVMatMul, QuantBasicTransformerBlock, QuantAttnBlock

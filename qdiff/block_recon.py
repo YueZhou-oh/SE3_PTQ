@@ -192,6 +192,10 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
     # print(f'block rec: {block}')
     sio_bs = 8       # too large would cause OOM
     
+    # import pickle
+    # with open('./debugs/train/encoder/cali_data.pkl', 'wb') as f:
+    #     pickle.dump(cali_data, f)
+
     nowtime = datetime.now().strftime("%y-%m-%d-%H:%M:%S")
     logger.info(f'=========== start generating inp and out data at {nowtime}')
     cached_inps, cached_outs = save_inp_oup_data(cali_data,
@@ -270,10 +274,24 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
         # cur_grad = cached_grads[idx].to(device) if opt_mode != 'mse' else None
         cur_grad = None
         
+        # for m in block.modules():     # suppose to be no reconstruction loss
+        #     if isinstance(m, QuantModule):
+        #         m.set_quant_state(False, False)
+                
         optimizer.zero_grad()
+        
+        # import pickle
+        # with open('./debugs/train/encoder2/cur_inp.pkl', 'wb') as f:
+        #     pickle.dump(cur_inp, f)
+        # out_quant = block(cur_inp[0].to(device), cur_inp[1].to(device), None)
+        # with open('./debugs/train/encoder2/out_quant.pkl', 'wb') as f:
+        #     pickle.dump(out_quant, f)
+        # with open('./debugs/train/encoder2/cur_out.pkl', 'wb') as f:
+        #     pickle.dump(cur_out, f)
+        
         if isinstance(cur_inp, tuple):
             if block.name == 'quanttel':
-                out_quant = block(cur_inp[0], None, cur_inp[1])
+                out_quant = block(cur_inp[0], cur_inp[1], None)
             elif block.name == 'quantet':
                 out_quant = block(cur_inp[0], cur_inp[1])
             else:
@@ -287,6 +305,15 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
             _, out_quant = out_quant
             _, cur_out = cur_out
         
+        # import pickle
+        # with open('./debugs/train/encoder/out_quant.pkl', 'wb') as f:
+        #     pickle.dump(out_quant, f)
+        # with open('./debugs/train/encoder/cur_out.pkl', 'wb') as f:
+        #     pickle.dump(cur_out, f)
+        # with open('./debugs/train/encoder/cur_inp.pkl', 'wb') as f:
+        #     pickle.dump(cur_inp, f)
+        # exit(0)
+            
         err = loss_func(out_quant, cur_out, cur_grad)
         err.backward(retain_graph=True)
         if multi_gpu:
