@@ -275,11 +275,11 @@ class PdbDataset(data.Dataset):
         else:
             return final_feats, pdb_name
 
-    def return_all_data_dict(self):
+    def return_all_data_dict(self, samples=80):
         tmp = self.__getitem__(0)
         all_data = {}
         max_length = 512
-        samples = 2560  #2560  
+        # samples = 2560  #2560  
 
         # for idx in range(len(self.csv)):
         #     tmp = self.__getitem__(idx)
@@ -309,8 +309,8 @@ class PdbDataset(data.Dataset):
         print('constructing calibaration dataset...')
         return all_data
     
-    def return_initializing_data_dict(self):
-        num = 2
+    def return_initializing_data_dict(self, num=2):
+        # num = 2
         tmp = self.__getitem__(0)
         init_data = {}
         max_length = 0

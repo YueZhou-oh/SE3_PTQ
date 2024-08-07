@@ -84,6 +84,7 @@ def multi_head_self_attn_forward(self, x, xk, xv, attn_mask=None,
     
     self.scale = 1.0 / math.sqrt(q.shape[-1])
     if self.use_act_quant:
+        # print('---------- tel goes here -----------')
         q_scaled = self.act_quantizer_q(q) * self.scale
         k = self.act_quantizer_k(k)
         # sim = einsum('b i d, b j d -> b i j', quant_q, quant_k) * self.scale
@@ -367,7 +368,7 @@ class QuantTorsionAngles(BaseQuantBlock):
             if isinstance(m, QuantModule):
                 m.set_quant_state(weight_quant, act_quant)
         
-class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, defined in each QuantModule
+class QuantIPA(BaseQuantBlock): 
     def __init__(self, ipa: InvariantPointAttention, act_quant_params: dict = {}, weight_quant_params: dict={}, sm_abit: int = 8):
         super().__init__(act_quant_params)
         self.name = 'quantipa'
@@ -375,7 +376,7 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
         self.use_act_quant = False
         self.weight_quant_params = weight_quant_params
         self.act_quant_params = act_quant_params
-        self.disable_act_quant = True
+        # self.disable_act_quant = True
         self._ipa_conf = ipa._ipa_conf
         self.c_s = ipa.c_s
         self.c_z = ipa.c_z
@@ -397,6 +398,15 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
         self.softplus = ipa.softplus
         self.linear_rbf = ipa.linear_rbf
         self.split = 0
+        
+        self.act_quantizer_q = UniformAffineQuantizer(**act_quant_params)
+        self.act_quantizer_k = UniformAffineQuantizer(**act_quant_params)
+        self.act_quantizer_ptdisp = UniformAffineQuantizer(**act_quant_params)
+        self.act_quantizer_aupd = UniformAffineQuantizer(**act_quant_params)
+        self.act_quantizer_v = UniformAffineQuantizer(**act_quant_params)
+        self.act_quantizer_vpts = UniformAffineQuantizer(**act_quant_params)
+        self.act_quantizer_opt = UniformAffineQuantizer(**act_quant_params)
+        self.act_quantizer_pairz = UniformAffineQuantizer(**act_quant_params)
         
     def forward(self, s: torch.Tensor,
             z: torch.Tensor,  #z: Optional[torch.Tensor],
@@ -473,10 +483,18 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
             z[0] = z[0].cpu()
 
         # [*, H, N_res, N_res]
-        a = torch.matmul(
-            permute_final_dims(q, (1, 0, 2)),  # [*, H, N_res, C_hidden]
-            permute_final_dims(k, (1, 2, 0)),  # [*, H, C_hidden, N_res]
-        )
+        # TODO add if else act_quant to q, k
+        if not self.use_act_quant:
+            a = torch.matmul(
+                permute_final_dims(q, (1, 0, 2)),  # [*, H, N_res, C_hidden]
+                permute_final_dims(k, (1, 2, 0)),  # [*, H, C_hidden, N_res]
+            )
+        else:
+            a = torch.matmul(
+                permute_final_dims(self.act_quantizer_q(q), (1, 0, 2)),  # [*, H, N_res, C_hidden]
+                permute_final_dims(self.act_quantizer_k(k), (1, 2, 0)),  # [*, H, C_hidden, N_res]
+            )
+            
         a *= math.sqrt(1.0 / (3 * self.c_hidden))
         a += (math.sqrt(1.0 / 3) * permute_final_dims(b, (2, 0, 1)))
         # print('a', a.shape) # torch.Size([1, 8, 100, 100])
@@ -484,7 +502,12 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
 
         # [*, N_res, N_res, H, P_q, 3]
         pt_displacement = q_pts.unsqueeze(-4) - k_pts.unsqueeze(-5)
-        pt_att = pt_displacement ** 2
+        # TODO add if else act_quant to pt_displacement
+        if not self.use_act_quant:
+            pt_att = pt_displacement ** 2
+        else:
+            # print('-------- ipa forward use act quantizer ---------')
+            pt_att = self.act_quantizer_ptdisp(pt_displacement) ** 2
 
         # [*, N_res, N_res, H, P_q]
         pt_att = sum(torch.unbind(pt_att, dim=-1))
@@ -517,21 +540,37 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
         # Compute output
         ################
         # [*, N_res, H, C_hidden]
-        o = torch.matmul(
-            a, v.transpose(-2, -3).to(dtype=a.dtype)
-        ).transpose(-2, -3)
+        # TODO add if else act_quant to a, v
+        if not self.use_act_quant:
+            o = torch.matmul(
+                a, v.transpose(-2, -3).to(dtype=a.dtype)
+            ).transpose(-2, -3)
+        else:
+            o = torch.matmul(
+                self.act_quantizer_aupd(a), self.act_quantizer_v(v).transpose(-2, -3).to(dtype=a.dtype)
+            ).transpose(-2, -3)
         # print('o', o.shape)     # torch.Size([1, 100, 8, 256])
         # [*, N_res, H * C_hidden]
         o = flatten_final_dims(o, 2)
 
         # [*, H, 3, N_res, P_v] 
-        o_pt = torch.sum(
-            (
-                a[..., None, :, :, None]
-                * permute_final_dims(v_pts, (1, 3, 0, 2))[..., None, :, :]
-            ),
-            dim=-2,
-        )
+        # # TODO add if else act_quant to a, v_pts
+        if not self.use_act_quant:
+            o_pt = torch.sum(
+                (
+                    a[..., None, :, :, None]
+                    * permute_final_dims(v_pts, (1, 3, 0, 2))[..., None, :, :]
+                ),
+                dim=-2,
+            )
+        else:
+            o_pt = torch.sum(
+                (
+                    self.act_quantizer_aupd(a)[..., None, :, :, None]
+                    * permute_final_dims(self.act_quantizer_vpts(v_pts), (1, 3, 0, 2))[..., None, :, :]
+                ),
+                dim=-2,
+            )
         # print(a[..., None, :, :, None].shape, permute_final_dims(v_pts, (1, 3, 0, 2))[..., None, :, :].shape)
         # torch.Size([1, 8, 1, 100, 100, 1]) torch.Size([1, 8, 3, 1, 100, 12])
         # print(o_pt.shape)   # torch.Size([1, 8, 3, 100, 12])
@@ -541,7 +580,11 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
         # print(o_pt.shape)   # torch.Size([1, 100, 8, 12, 3])
 
         # [*, N_res, H * P_v]
-        o_pt_dists = torch.sqrt(torch.sum(o_pt ** 2, dim=-1) + self.eps)
+        # TODO add if else act_quant to o_pt
+        if not self.use_act_quant:
+            o_pt_dists = torch.sqrt(torch.sum(o_pt ** 2, dim=-1) + self.eps)
+        else:
+            o_pt_dists = torch.sqrt(torch.sum(self.act_quantizer_opt(o_pt) ** 2, dim=-1) + self.eps)
         # print(o_pt_dists.shape)     # torch.Size([1, 100, 8, 12])
         o_pt_norm_feats = flatten_final_dims(
             o_pt_dists, 2)
@@ -554,7 +597,11 @@ class QuantIPA(BaseQuantBlock):  # TODO activation quantization, no need, define
 
         # [*, N_res, H, C_z // 4]
         pair_z = self.down_z(z[0]).to(dtype=a.dtype) * edge_mask[..., None]
-        o_pair = torch.matmul(a.transpose(-2, -3), pair_z)
+        # TODO add if else act_quant to a, pair_z
+        if not self.use_act_quant:
+            o_pair = torch.matmul(a.transpose(-2, -3), pair_z)
+        else:
+            o_pair = torch.matmul(self.act_quantizer_aupd(a).transpose(-2, -3), self.act_quantizer_pairz(pair_z))
         # print(pair_z.shape, o_pair.shape)       # torch.Size([1, 100, 100, 32]) torch.Size([1, 100, 8, 32])
         # [*, N_res, H * C_z // 4]
         o_pair = flatten_final_dims(o_pair, 2)

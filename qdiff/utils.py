@@ -39,7 +39,6 @@ def save_inp_oup_data(cali_data, model: QuantModel, layer: Union[QuantModule, Ba
     cached_inps, cached_outs = None, None
     torch.cuda.empty_cache()
 
-
     # if not cond:
     #     cali_xs, cali_ts = cali_data
     # else:
@@ -160,7 +159,7 @@ def save_inp_oup_data(cali_data, model: QuantModel, layer: Union[QuantModule, Ba
                     cached_inps = torch.zeros(l_in, *cur_inp.shape[1:])
                 cached_inps.index_copy_(0, torch.arange(i * cur_inp.shape[0], (i + 1) * cur_inp.shape[0]), cur_inp.cpu())
         
-        
+    torch.cuda.empty_cache()
         # if is_sm:
         #     if cached_outs is None:
         #         l_out = cur_out.shape[0] * num
@@ -228,7 +227,6 @@ def save_inp_oup_data(cali_data, model: QuantModel, layer: Union[QuantModule, Ba
     else:
         logger.info(f"out shape: {cached_outs.shape}")
 
-    
     torch.cuda.empty_cache()
     if keep_gpu:
         if isinstance(cached_inps, list):
@@ -565,7 +563,7 @@ def resume_cali_model(qnn, ckpt_path, cali_data, quant_act=False, act_quant_mode
     if quant_act:           
         print("Initializing act quantization parameters")
         qnn.set_quant_state(True, True)                    
-        _ = qnn(cali_data)                           # initialize activation AdaRoundQuantizer
+        _ = qnn(cali_data)                           # initialize activation UniformAffineQuantizer
         # if not cond:
         #     _ = qnn(cali_xs[:1].cuda(), cali_ts[:1].cuda())
         # else:

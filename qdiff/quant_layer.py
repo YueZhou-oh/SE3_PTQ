@@ -52,6 +52,7 @@ class UniformAffineQuantizer(nn.Module):
         # assert 2 <= n_bits <= 8, 'bitwidth not supported'
         self.n_bits = n_bits
         self.n_levels = 2 ** self.n_bits if not self.sym else 2 ** (self.n_bits - 1) - 1
+        # print('===========================n_levels:', self.n_levels)
         self.delta = None
         self.zero_point = None
         self.inited = False
@@ -60,7 +61,7 @@ class UniformAffineQuantizer(nn.Module):
         self.scale_method = scale_method
         self.running_stat = False               # for activation diff
         self.always_zero = always_zero
-        if self.leaf_param:
+        if self.leaf_param:                 # quant_act
             self.x_min, self.x_max = None, None
         # print(self.delta, self.inited, self.leaf_param, self.channel_wise)
         # None False False True
@@ -70,12 +71,13 @@ class UniformAffineQuantizer(nn.Module):
             if self.leaf_param:
                 delta, self.zero_point = self.init_quantization_scale(x, self.channel_wise)
                 self.delta = torch.nn.Parameter(delta)
-                # self.zero_point = torch.nn.Parameter(self.zero_point)
+                # self.zero_point = torch.nn.Parameter(self.zero_point)         # commented out in orig impl
             else:
                 self.delta, self.zero_point = self.init_quantization_scale(x, self.channel_wise)
             self.inited = True
 
         if self.running_stat:
+            # print('---------- act_momentum_update ----------')
             self.act_momentum_update(x)
 
         # start quantization
@@ -137,6 +139,7 @@ class UniformAffineQuantizer(nn.Module):
                 zero_point = zero_point.view(-1, 1)
         else:
             if self.leaf_param:
+                # print('================ ', x.data.shape)
                 self.x_min = x.data.min()
                 self.x_max = x.data.max()
 
@@ -154,6 +157,7 @@ class UniformAffineQuantizer(nn.Module):
                 else:
                     delta = float(x.max().item() - x.min().item()) / (self.n_levels - 1)
                 if delta < 1e-8:
+                    print('----- delta < 1e-8:', delta, '---------')
                     warnings.warn('Quantization range close to zero: [{}, {}]'.format(x_min, x_max))
                     delta = 1e-8
 
@@ -258,18 +262,31 @@ class QuantModule(nn.Module):
             self.set_split()
 
         if not self.disable_act_quant and self.use_act_quant:
-            print('======== act split, not here ===============')
-            # TODO
             if self.split != 0:
-                if self.act_quant_mode == 'qdiff':
-                    input_0 = self.act_quantizer(input[:, :self.split, :, :])
-                    input_1 = self.act_quantizer_0(input[:, self.split:, :, :])
-                input = torch.cat([input_0, input_1], dim=1)
+                # print('-----input:', input.shape)
+                if len(self.split) == 6:
+                    input_0 = self.act_quantizer(input[..., :self.split[0]])
+                    input_1 = self.act_quantizer_0(input[..., self.split[0]:self.split[0]+self.split[1]])
+                    input_2 = self.act_quantizer_1(input[..., self.split[0]+self.split[1]:self.split[0]+self.split[1]+self.split[2]])
+                    input_3 = self.act_quantizer_2(input[..., self.split[0]+self.split[1]+self.split[2]:self.split[0]+self.split[1]+self.split[2]+self.split[3]])
+                    input_4 = self.act_quantizer_3(input[..., self.split[0]+self.split[1]+self.split[2]+self.split[3]:self.split[0]+self.split[1]+self.split[2]+self.split[3]+self.split[4]])
+                    input_5 = self.act_quantizer_4(input[..., self.split[0]+self.split[1]+self.split[2]+self.split[3]+self.split[4]:])
+                    input = torch.cat([input_0, input_1, input_2, input_3, input_4, input_5], dim=-1)
+                elif len(self.split) == 3:
+                    input_0 = self.act_quantizer(input[..., :self.split[0]])
+                    input_1 = self.act_quantizer_0(input[..., self.split[0]:self.split[0]+self.split[1]])
+                    input_2 = self.act_quantizer_1(input[..., self.split[0]+self.split[1]:])
+                    input = torch.cat([input_0, input_1, input_2], dim=-1)
+                elif len(self.split) == 2:
+                    input_0 = self.act_quantizer(input[..., :self.split[0]])
+                    input_1 = self.act_quantizer_0(input[..., self.split[0]:])
+                    input = torch.cat([input_0, input_1], dim=-1)
             else:
-                if self.act_quant_mode == 'qdiff':
-                    input = self.act_quantizer(input)
+                input = self.act_quantizer(input)
+                
         if self.use_weight_quant:
             if self.split != 0:
+                # print('-----weight:', self.weight.shape)
                 if len(self.split) == 6:
                     weight_0 = self.weight_quantizer(self.weight[:, :self.split[0], ...])
                     weight_1 = self.weight_quantizer_0(self.weight[:, self.split[0]:self.split[0]+self.split[1], ...])
@@ -278,19 +295,21 @@ class QuantModule(nn.Module):
                     weight_4 = self.weight_quantizer_3(self.weight[:, self.split[0]+self.split[1]+self.split[2]+self.split[3]:self.split[0]+self.split[1]+self.split[2]+self.split[3]+self.split[4], ...])
                     weight_5 = self.weight_quantizer_4(self.weight[:, self.split[0]+self.split[1]+self.split[2]+self.split[3]+self.split[4]:, ...])
                     weight = torch.cat([weight_0, weight_1, weight_2, weight_3, weight_4, weight_5], dim=1)
-                if len(self.split) == 3:
+                elif len(self.split) == 3:
                     weight_0 = self.weight_quantizer(self.weight[:, :self.split[0], ...])
                     weight_1 = self.weight_quantizer_0(self.weight[:, self.split[0]:self.split[0]+self.split[1], ...])
                     weight_2 = self.weight_quantizer_1(self.weight[:, self.split[0]+self.split[1]:, ...])
                     weight = torch.cat([weight_0, weight_1, weight_2], dim=1)
-                if len(self.split) == 2:
+                elif len(self.split) == 2:
                     weight_0 = self.weight_quantizer(self.weight[:, :self.split[0], ...])
                     weight_1 = self.weight_quantizer_0(self.weight[:, self.split[0]:, ...])
                     weight = torch.cat([weight_0, weight_1], dim=1)
             else:
                 weight = self.weight_quantizer(self.weight)
             bias = self.bias
+            # print('============ goes with quant ===============')     # ok no bug
         else:
+            # print('xxxxxxxxxxxxxx goes no quant xxxxxxxxxxxxxxxx')    # ok no bug
             weight = self.org_weight
             bias = self.org_bias
         out = self.fwd_func(input, weight, bias, **self.fwd_kwargs)
@@ -335,6 +354,15 @@ class QuantModule(nn.Module):
     def set_running_stat(self, running_stat: bool):
         if self.act_quant_mode == 'qdiff':
             self.act_quantizer.running_stat = running_stat
-            # TODO
             if self.split != 0:
-                self.act_quantizer_0.running_stat = running_stat
+                if len(self.split) == 6:
+                    self.act_quantizer_0.running_stat = running_stat
+                    self.act_quantizer_1.running_stat = running_stat
+                    self.act_quantizer_2.running_stat = running_stat
+                    self.act_quantizer_3.running_stat = running_stat
+                    self.act_quantizer_4.running_stat = running_stat
+                elif len(self.split) == 3:
+                    self.act_quantizer_0.running_stat = running_stat
+                    self.act_quantizer_1.running_stat = running_stat
+                elif len(self.split) == 2:
+                    self.act_quantizer_0.running_stat = running_stat

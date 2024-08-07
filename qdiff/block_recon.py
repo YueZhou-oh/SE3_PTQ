@@ -47,7 +47,6 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
     if not include_act_func:
         org_act_func = block.activation_function
         block.activation_function = StraightThrough()
-
     
     if not act_quant:
         # Replace weight quantizer to AdaRoundQuantizer
@@ -126,10 +125,9 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
         optimizer = torch.optim.Adam(opt_params)
         scheduler = None
     else:
-        # TODO IPA and TEL impl
+        # TODO IPA impl
         # second loop, act_quant = True
         # Use UniformAffineQuantizer to learn delta
-        # TODO 
         if hasattr(block.act_quantizer, 'delta') and block.act_quantizer.delta is not None:
             opt_params = [block.act_quantizer.delta]
             # print('have initial opt_params: ', opt_params)
@@ -138,48 +136,46 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
             # print('blank opt_params')       # here
         
         if block.name == 'quanttel':
+            # print('------------ add delta parameter goes here --------------')
             opt_params += [
                 block.self_attn.act_quantizer_q.delta,
                 block.self_attn.act_quantizer_k.delta,
                 block.self_attn.act_quantizer_v.delta,
                 block.self_attn.act_quantizer_w.delta,]
-        
-        # if block.name == 'quantipa':
-        #     pass
-        
-        # if hasattr(block, 'attn1'):
-        #     opt_params += [
-        #         block.attn1.act_quantizer_q.delta,
-        #         block.attn1.act_quantizer_k.delta,
-        #         block.attn1.act_quantizer_v.delta,
-        #         block.attn2.act_quantizer_q.delta,
-        #         block.attn2.act_quantizer_k.delta,
-        #         block.attn2.act_quantizer_v.delta]
-        #     if block.attn1.act_quantizer_w.n_bits != 16:
-        #         opt_params += [block.attn1.act_quantizer_w.delta]
-        #     if block.attn2.act_quantizer_w.n_bits != 16:
-        #         opt_params += [block.attn2.act_quantizer_w.delta]
-        # if hasattr(block, 'act_quantizer_q'):
-        #     opt_params += [
-        #         block.act_quantizer_q.delta,
-        #         block.act_quantizer_k.delta]
-        # if hasattr(block, 'act_quantizer_w'):
-        #     opt_params += [block.act_quantizer_v.delta]
-        #     if block.act_quantizer_w.n_bits != 16:
-        #         opt_params += [block.act_quantizer_w.delta]
-
+        elif block.name == 'quantipa':
+            # print('-------- add ipa delta -----------')
+            opt_params += [
+                block.act_quantizer_q.delta,
+                block.act_quantizer_k.delta,
+                block.act_quantizer_ptdisp.delta,
+                block.act_quantizer_aupd.delta,
+                block.act_quantizer_v.delta,
+                block.act_quantizer_vpts.delta,
+                block.act_quantizer_opt.delta,
+                block.act_quantizer_pairz.delta,]
+            
         for name, module in block.named_modules():
             if isinstance(module, QuantModule):
                 if module.act_quantizer.delta is not None:
                     opt_params += [module.act_quantizer.delta]
                 if module.split != 0 and module.act_quantizer_0.delta is not None:
-                    opt_params += [module.act_quantizer_0.delta]
+                    if len(module.split) == 6:
+                        opt_params += [module.act_quantizer_0.delta,
+                                       module.act_quantizer_1.delta,
+                                       module.act_quantizer_2.delta,
+                                       module.act_quantizer_3.delta,
+                                       module.act_quantizer_4.delta,]
+                    elif len(module.split) == 3:
+                        opt_params += [module.act_quantizer_0.delta,
+                                       module.act_quantizer_1.delta,]
+                    elif len(module.split) == 2:
+                        opt_params += [module.act_quantizer_0.delta]
 
         # print('all opt parameters: ', opt_params)
         optimizer = torch.optim.Adam(opt_params, lr=lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=iters, eta_min=0.)
 
-    loss_mode = 'none' if act_quant else 'relaxation'
+    loss_mode = 'none' if act_quant else 'relaxation'   # only update delta with rec_loss
     rec_loss = opt_mode
 
     loss_func = LossFunction(logger, block, round_loss=loss_mode, weight=weight, max_count=iters, rec_loss=rec_loss,
@@ -306,11 +302,11 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
             _, cur_out = cur_out
         
         # import pickle
-        # with open('./debugs/train/encoder/out_quant.pkl', 'wb') as f:
+        # with open('out_quant.pkl', 'wb') as f:
         #     pickle.dump(out_quant, f)
-        # with open('./debugs/train/encoder/cur_out.pkl', 'wb') as f:
+        # with open('cur_out.pkl', 'wb') as f:
         #     pickle.dump(cur_out, f)
-        # with open('./debugs/train/encoder/cur_inp.pkl', 'wb') as f:
+        # with open('cur_inp.pkl', 'wb') as f:
         #     pickle.dump(cur_inp, f)
         # exit(0)
             
@@ -322,6 +318,7 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
         #         link.allreduce(p.grad)
         optimizer.step()
         if scheduler:
+            # print('--------- with scheduler ---------')
             scheduler.step()
 
     torch.cuda.empty_cache()
@@ -431,7 +428,7 @@ class LossFunction:
             raise NotImplementedError
 
         total_loss = rec_loss + round_loss
-        if self.count % 100 == 0:
+        if self.count % 50 == 0:
             self.logger.info('Total loss:\t{:.3f} (rec:{:.3f}, round:{:.3f})\tb={:.2f}\tcount={}'.format(
                   float(total_loss), float(rec_loss), float(round_loss), b, self.count))
         return total_loss

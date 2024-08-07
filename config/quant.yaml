@@ -8,22 +8,22 @@ quant:
   quant_mode: qdiff
   weight_bit: 8
   w_lr: 0.02     # 0.01
-  quant_act: False  #True
+  quant_act: True  #True
   act_bit: 8
   split: True
-  a_sym: True
+  a_sym: False  # True
   skip_type: quad
   resume: False
-  resume_w: False    # True    # False
-  sm_abit: 8
-  cali_batch_size: 2 #16
+  resume_w: True    # True    # False
+  sm_abit: 8        # set as same as act_bit when a_sym = True
+  cali_batch_size: 4 #16
   cali_iters: 20000 #10000
-  cali_iters_a: 10 #2500
+  cali_iters_a: 2000 #2500
   # learning rate for LSQ
-  cali_lr: 4e-4
+  cali_lr: 6e-4     # 4e-4
   # L_p norm minimization for LSQ
   cali_p: 2.4
-  cali_ckpt: #ckpt/quant/10D_07M_2024Y_17h_11m_46s/ckpt.pth
+  cali_ckpt: ckpt/quant/02D_08M_2024Y_14h_53m_02s/ckpt-w.pth
 
 data:
   # CSV for path and metadata to training examples.
@@ -123,7 +123,7 @@ experiment:
   # Checkpoint directory to warm start from.
   warm_start: ./weights/
   use_warm_start_conf: False
-  ckpt_dir: #./ckpt/
+  ckpt_dir: ./ckpt/
 
   # Loss weights.
   trans_loss_weight: 1.0
