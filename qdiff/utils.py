@@ -322,11 +322,29 @@ class GetLayerInpOut:
                 _ = self.model(input_feats)
             except StopForwardException:
                 pass
-
+            
+            from qdiff.quant_block import BaseQuantBlock, QuantEmbedder
+            from model.quant_score_network import Embedder
             if self.asym:
                 # Recalculate input with network quantized
                 self.data_saver.store_output = False
                 self.model.set_quant_state(weight_quant=True, act_quant=self.act_quant)
+                # self.model.set_quant_state(weight_quant=True, act_quant=False)
+                # from qdiff.quant_block import BaseQuantBlock, QuantEmbedder
+                # from model.quant_score_network import Embedder
+                specials = {
+                    Embedder: QuantEmbedder,
+                }
+                def refactor(module):
+                    for name, child_module in module.named_children():
+                        if isinstance(module, QuantEmbedder):
+                            module.set_quant_state(True, False)
+                            # print(module)
+                            # print('-------utils here-------')
+                        else:
+                            refactor(child_module)                
+                refactor(self.model)
+                
                 try:
                     _ = self.model(input_feats)
                 except StopForwardException:
@@ -521,6 +539,7 @@ def resume_cali_model(qnn, ckpt_path, cali_data, quant_act=False, act_quant_mode
     
     print("Initializing weight quantization parameters")
     qnn.set_quant_state(True, False)
+    
     _ = qnn(cali_data)
     
     # print('=========1==========', qnn.model)

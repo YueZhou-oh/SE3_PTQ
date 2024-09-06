@@ -8,22 +8,23 @@ quant:
   quant_mode: qdiff
   weight_bit: 8
   w_lr: 0.02     # 0.01
-  quant_act: True  #True
+  quant_act: True     # False  #True
   act_bit: 8
   split: True
-  a_sym: False  # True
+  a_sym: True   #False  # True
   skip_type: quad
   resume: False
   resume_w: True    # True    # False
-  sm_abit: 8        # set as same as act_bit when a_sym = True
-  cali_batch_size: 4 #16
+  sm_abit: 16       
+  cali_batch_size: 2 #16
   cali_iters: 20000 #10000
-  cali_iters_a: 2000 #2500
+  cali_iters_a: 5000   #10 #2500
   # learning rate for LSQ
-  cali_lr: 6e-4     # 4e-4
+  cali_lr: 1e-4     # 4e-4
   # L_p norm minimization for LSQ
   cali_p: 2.4
-  cali_ckpt: ckpt/quant/02D_08M_2024Y_14h_53m_02s/ckpt-w.pth
+  cali_ckpt: ckpt/quant/04D_09M_2024Y_11h_28m_57s/ckpt-w.pth
+  #ckpt/quant/28D_08M_2024Y_09h_06m_34s/ckpt-w.pth      #ckpt/quant/02D_08M_2024Y_14h_53m_02s/ckpt-w.pth
 
 data:
   # CSV for path and metadata to training examples.

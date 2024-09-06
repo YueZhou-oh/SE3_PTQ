@@ -12,6 +12,8 @@ import pandas as pd
 import logging
 import random
 import functools as fn
+import glob
+import pickle
 
 from torch.utils import data
 from data import utils as du
@@ -306,8 +308,41 @@ class PdbDataset(data.Dataset):
                     all_data[key][idx][:s_end] = torch.tensor(tmp[key]).clone().detach()
                 else:
                     all_data[key][idx] = torch.tensor(tmp[key]).clone().detach()
+        print('constructing random dataset from pdb database...')
+        return all_data
+    
+    def return_cali_ds_dict(self, samples=2400):
+        cali_ds_path = './cali_ds/26D_08M_2024Y_17h_23m_47s/cali_ds_1234_60_0_0_50_300_350'
+        file_names = glob.glob(f'{cali_ds_path}/*.pkl')
+        samples = min(samples, len(file_names))
+        
+        all_data = {}
+        max_length = 512
+        with open(file_names[0], 'rb') as f:
+            tmp = pickle.load(f)
+
+        for key in tmp.keys():      
+            value = np.array(tmp[key])
+            if len(tmp[key].shape) > 1:
+                all_data[key] = torch.zeros((samples, max_length) + value.shape[2:])
+            else:
+                all_data[key] = torch.zeros(samples)
+                
+        for idx in range(samples):
+            with open(file_names[idx], 'rb') as f:
+                tmp = pickle.load(f)
+
+            for key in tmp.keys():
+                if len(all_data[key].shape) > 1:
+                    s_end = tmp[key].shape[1]
+                    all_data[key][idx][:s_end] = tmp[key][0].detach()
+                else:
+                    all_data[key][idx] = tmp[key][0].detach()
+        
         print('constructing calibaration dataset...')
         return all_data
+    
+    
     
     def return_initializing_data_dict(self, num=2):
         # num = 2

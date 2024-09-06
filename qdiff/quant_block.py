@@ -1,3 +1,5 @@
+import time, os
+import numpy as np
 import logging
 from types import MethodType
 import torch as th
@@ -18,7 +20,7 @@ from ldm.modules.attention import exists, default
 
 from ddim.models.diffusion import ResnetBlock, AttnBlock, nonlinearity
 
-from torch.nn import TransformerEncoderLayer, MultiheadAttention, TransformerEncoder, Sequential
+from torch.nn import TransformerEncoderLayer, TransformerEncoder
 from model.quant_score_network import Embedder
 from model.quant_ipa_pytorch import InvariantPointAttention, permute_final_dims, flatten_final_dims, StructureModuleTransition, EdgeTransition, TorsionAngles
 from data import utils as du
@@ -40,8 +42,13 @@ def multi_head_self_attn_forward(self, x, xk, xv, attn_mask=None,
         # print(x.shape, self.in_proj_weight.shape, self.w_quantizer_qkv(self.in_proj_weight).shape, self.in_proj_bias.shape, self.w_quantizer_qkv(self.in_proj_bias).shape)
         # qkv = F.linear(x, self.w_quantizer_qkv(self.in_proj_weight), self.in_proj_bias)
         qkv = self.in_proj(x)
+        if attn_mask is not None:
+            if len(x.shape) == len(attn_mask.shape):
+                qkv *= (attn_mask[:x.shape[0], :, 0][... , None])
+            else:
+                qkv *= attn_mask[... , None]
         q, k, v = qkv.chunk(3, dim=-1)
-        
+    # print(q)    
     q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> (b h) n d', h=h), (q, k, v))
 
     # if attn_mask is not None:
@@ -99,6 +106,7 @@ def multi_head_self_attn_forward(self, x, xk, xv, attn_mask=None,
     #     attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
     
     attn_output_weights = torch.bmm(q_scaled, k.transpose(-2, -1))
+    # print(attn_output_weights)
     # add masked for filled residue, no real attention exist
     if attn_mask is not None:        # fill with -inf
         if not attn_mask.shape == attn_output_weights.shape:
@@ -127,8 +135,9 @@ def multi_head_self_attn_forward(self, x, xk, xv, attn_mask=None,
     # output = F.linear(out, self.out_proj.weight, self.out_proj.bias)
     
     if attn_mask is not None:
-        output = output.masked_fill(torch.tile(attn_mask[:output.shape[0], :, 0][..., None], (1, 1, output.shape[-1])) == 0, 0)
-            
+        # output = output.masked_fill(torch.tile(attn_mask[:output.shape[0], :, 0][..., None], (1, 1, output.shape[-1])) == 0, 0)
+        output *= attn_mask[:output.shape[0], :, 0][... , None]
+         
     # print('output:', output[0])
     # print('============goes self-defined forward?????? yes====================')
     # print(output)
@@ -287,7 +296,23 @@ class QuantEdgeTransition(BaseQuantBlock):
         
     def forward(self, node_embed, edge_embed):
         # print(self.name)
+        # tag = time.time()
+        # if self.use_act_quant:
+        #     folder = os.path.join('dist', 'int')
+        #     os.makedirs(folder, exist_ok=True)
+        # else:
+        #     folder = os.path.join('dist', 'fp')
+        #     os.makedirs(folder, exist_ok=True)
+        # name = os.path.join(folder, f'input_node_{tag}.npy')
+        # np.save(name, node_embed.detach().cpu().numpy())
+        
         node_embed = self.initial_embed(node_embed)
+        
+        # name = os.path.join(folder, f'input_edge_bias_{tag}.npy')
+        # np.save(name, node_embed.detach().cpu().numpy())
+        # name = os.path.join(folder, f'input_edge_{tag}.npy')
+        # np.save(name, edge_embed.detach().cpu().numpy())
+        
         batch_size, num_res, _ = node_embed.shape
         edge_bias = torch.cat([
             torch.tile(node_embed[:, :, None, :], (1, 1, num_res, 1)),
@@ -305,12 +330,24 @@ class QuantEdgeTransition(BaseQuantBlock):
         # edge_embed = self.final_layer(self.trunk(edge_embed) + edge_embed)
         orig_embed = edge_embed
         edge_embed = self.trunk[0](edge_embed, split=split)
-        for layer in self.trunk[1:]:
-            edge_embed = layer(edge_embed)
-        edge_embed = self.final_layer(edge_embed + orig_embed)
+        # name = os.path.join(folder, f'edge_0_{tag}.npy')
+        # np.save(name, edge_embed.detach().cpu().numpy())
         
+        
+        for idx, layer in enumerate(self.trunk[1:]):
+            edge_embed = layer(edge_embed)
+            # name = os.path.join(folder, f'edge_{idx+1}_{tag}.npy')
+            # np.save(name, edge_embed.detach().cpu().numpy())
+            
+        edge_embed = self.final_layer(edge_embed + orig_embed)
+        # name = os.path.join(folder, f'edge_final_{tag}.npy')
+        # np.save(name, edge_embed.detach().cpu().numpy())
         
         edge_embed = self.layer_norm(edge_embed)
+        
+        # name = os.path.join(folder, f'after_norm_edge_final_{tag}.npy')
+        # np.save(name, edge_embed.detach().cpu().numpy())
+        
         edge_embed = edge_embed.reshape(
             batch_size, num_res, num_res, -1
         )
@@ -343,13 +380,38 @@ class QuantTorsionAngles(BaseQuantBlock):
         
     def forward(self, s: torch.Tensor):
         # print(self.name)
+        # tag = time.time()
+        # if self.use_act_quant:
+        #     folder = os.path.join('dist-torsion', 'int')
+        #     os.makedirs(folder, exist_ok=True)
+        # else:
+        #     folder = os.path.join('dist-torsion', 'fp')
+        #     os.makedirs(folder, exist_ok=True)
+        # name = os.path.join(folder, f's_initial_{tag}.npy')
+        # np.save(name, s.detach().cpu().numpy())
+
         s_initial = s
         s = self.linear_1(s)
+        
+        # name = os.path.join(folder, f's_linear1_{tag}.npy')
+        # np.save(name, s.detach().cpu().numpy())
+        
         s = self.relu(s)
+        
+        # name = os.path.join(folder, f's_relu1_{tag}.npy')
+        # np.save(name, s.detach().cpu().numpy())
+        
         s = self.linear_2(s)
-
+        
+        # name = os.path.join(folder, f's_linear2_{tag}.npy')
+        # np.save(name, s.detach().cpu().numpy())
+        
         s = s + s_initial
         unnormalized_s = self.linear_final(s)
+        
+        # name = os.path.join(folder, f's_unnor_{tag}.npy')
+        # np.save(name, unnormalized_s.detach().cpu().numpy())
+        
         norm_denom = torch.sqrt(
             torch.clamp(
                 torch.sum(unnormalized_s ** 2, dim=-1, keepdim=True),
@@ -357,6 +419,9 @@ class QuantTorsionAngles(BaseQuantBlock):
             )
         )
         normalized_s = unnormalized_s / norm_denom
+        
+        # name = os.path.join(folder, f's_nor_{tag}.npy')
+        # np.save(name, normalized_s.detach().cpu().numpy())
 
         return unnormalized_s, normalized_s  
         
@@ -401,12 +466,19 @@ class QuantIPA(BaseQuantBlock):
         
         self.act_quantizer_q = UniformAffineQuantizer(**act_quant_params)
         self.act_quantizer_k = UniformAffineQuantizer(**act_quant_params)
-        self.act_quantizer_ptdisp = UniformAffineQuantizer(**act_quant_params)
-        self.act_quantizer_aupd = UniformAffineQuantizer(**act_quant_params)
+        # self.act_quantizer_ptdisp = UniformAffineQuantizer(**act_quant_params)
+        act_quant_params_aupd = act_quant_params.copy()
+        act_quant_params_aupd['n_bits'] = sm_abit
+        act_quant_params_aupd['always_zero'] = True
+        self.act_quantizer_aupd = UniformAffineQuantizer(**act_quant_params_aupd)
         self.act_quantizer_v = UniformAffineQuantizer(**act_quant_params)
         self.act_quantizer_vpts = UniformAffineQuantizer(**act_quant_params)
-        self.act_quantizer_opt = UniformAffineQuantizer(**act_quant_params)
+        # self.act_quantizer_opt = UniformAffineQuantizer(**act_quant_params)
         self.act_quantizer_pairz = UniformAffineQuantizer(**act_quant_params)
+        
+        self.item_1 = torch.nn.Parameter(torch.tensor(math.sqrt(1.0 / 3)))         # BUG miss math.sqrt
+        self.item_2 = torch.nn.Parameter(torch.tensor(math.sqrt(1.0 / 3)))
+        self.item_3 = torch.nn.Parameter(torch.tensor(math.sqrt(1.0 / 3)))
         
     def forward(self, s: torch.Tensor,
             z: torch.Tensor,  #z: Optional[torch.Tensor],
@@ -424,6 +496,16 @@ class QuantIPA(BaseQuantBlock):
         # Generate scalar and point activations
         #######################################
         # [*, N_res, H * C_hidden]
+        # tag = time.time()
+        # if self.use_act_quant or self.use_weight_quant:
+        #     folder = os.path.join('dist-ipa3-w', 'int')
+        #     os.makedirs(folder, exist_ok=True)
+        # else:
+        #     folder = os.path.join('dist-ipa3-w', 'fp')
+        #     os.makedirs(folder, exist_ok=True)
+        # name = os.path.join(folder, f'z_initial_{tag}.npy')
+        # np.save(name, z[0].detach().cpu().numpy())
+        
         edge_mask = mask[..., None] * mask[..., None, :]
         q = self.linear_q(s) * mask[..., None]
         kv = self.linear_kv(s) * mask[..., None]
@@ -479,6 +561,23 @@ class QuantIPA(BaseQuantBlock):
         # [*, N_res, N_res, H]
         b = self.linear_b(z[0]) * edge_mask[..., None]
         
+        
+        # name = os.path.join(folder, f'q_{tag}.npy')
+        # np.save(name, q.detach().cpu().numpy())
+        # name = os.path.join(folder, f'k_{tag}.npy')
+        # np.save(name, k.detach().cpu().numpy())
+        # name = os.path.join(folder, f'v_{tag}.npy')
+        # np.save(name, v.detach().cpu().numpy())
+        # name = os.path.join(folder, f'q_pt_{tag}.npy')
+        # np.save(name, q_pts.detach().cpu().numpy())
+        # name = os.path.join(folder, f'k_pt_{tag}.npy')
+        # np.save(name, k_pts.detach().cpu().numpy())
+        # name = os.path.join(folder, f'v_pt_{tag}.npy')
+        # np.save(name, v_pts.detach().cpu().numpy())
+        # name = os.path.join(folder, f'b_{tag}.npy')
+        # np.save(name, b.detach().cpu().numpy())
+        
+        
         if(_offload_inference):
             z[0] = z[0].cpu()
 
@@ -495,29 +594,33 @@ class QuantIPA(BaseQuantBlock):
                 permute_final_dims(self.act_quantizer_k(k), (1, 2, 0)),  # [*, H, C_hidden, N_res]
             )
             
-        a *= math.sqrt(1.0 / (3 * self.c_hidden))
-        a += (math.sqrt(1.0 / 3) * permute_final_dims(b, (2, 0, 1)))
+        a *= math.sqrt(1.0 / self.c_hidden) * self.item_1
+        a += (self.item_2 * permute_final_dims(b, (2, 0, 1)))
         # print('a', a.shape) # torch.Size([1, 8, 100, 100])
         # exit(0)
 
         # [*, N_res, N_res, H, P_q, 3]
         pt_displacement = q_pts.unsqueeze(-4) - k_pts.unsqueeze(-5)
-        # TODO add if else act_quant to pt_displacement
-        if not self.use_act_quant:
-            pt_att = pt_displacement ** 2
-        else:
-            # print('-------- ipa forward use act quantizer ---------')
-            pt_att = self.act_quantizer_ptdisp(pt_displacement) ** 2
-
+        # TODO add if else act_quant to pt_displacement, UNDO
+        # if not self.use_act_quant:
+        #     pt_att = pt_displacement ** 2
+        # else:
+        #     # print('-------- ipa forward use act quantizer ---------')
+        #     pt_att = self.act_quantizer_ptdisp(pt_displacement) ** 2
+        pt_att = pt_displacement ** 2
+        
         # [*, N_res, N_res, H, P_q]
         pt_att = sum(torch.unbind(pt_att, dim=-1))
         # print(pt_att.shape) # torch.Size([1, 100, 100, 8, 8])
         head_weights = self.softplus(self.head_weights).view(
             *((1,) * len(pt_att.shape[:-2]) + (-1, 1))
         )
+        # head_weights = head_weights * math.sqrt(
+        #     1.0 / (3 * (self.no_qk_points * 9.0 / 2))
+        # )
         head_weights = head_weights * math.sqrt(
-            1.0 / (3 * (self.no_qk_points * 9.0 / 2))
-        )
+            1.0 / (self.no_qk_points * 9.0 / 2)
+        ) * self.item_3
         pt_att = pt_att * head_weights
         # print(head_weights.shape) # torch.Size([1, 1, 1, 8, 1])
 
@@ -533,14 +636,21 @@ class QuantIPA(BaseQuantBlock):
         
         a = a + pt_att 
         a = a + square_mask.unsqueeze(-3)
+        
+        # name = os.path.join(folder, f'a_bef_sm_{tag}.npy')
+        # np.save(name, a.detach().cpu().numpy())
+        
         a = self.softmax(a)
         # print('a', a.shape)     # torch.Size([1, 8, 100, 100])
-
+        
+        # name = os.path.join(folder, f'a_aft_sm_{tag}.npy')
+        # np.save(name, a.detach().cpu().numpy())
+        
         ################
         # Compute output
         ################
         # [*, N_res, H, C_hidden]
-        # TODO add if else act_quant to a, v
+        # TODO add if else act_quant to a, v, a needs sm_abits quant
         if not self.use_act_quant:
             o = torch.matmul(
                 a, v.transpose(-2, -3).to(dtype=a.dtype)
@@ -580,11 +690,12 @@ class QuantIPA(BaseQuantBlock):
         # print(o_pt.shape)   # torch.Size([1, 100, 8, 12, 3])
 
         # [*, N_res, H * P_v]
-        # TODO add if else act_quant to o_pt
-        if not self.use_act_quant:
-            o_pt_dists = torch.sqrt(torch.sum(o_pt ** 2, dim=-1) + self.eps)
-        else:
-            o_pt_dists = torch.sqrt(torch.sum(self.act_quantizer_opt(o_pt) ** 2, dim=-1) + self.eps)
+        # TODO add if else act_quant to o_pt, UNDO
+        # if not self.use_act_quant:
+        #     o_pt_dists = torch.sqrt(torch.sum(o_pt ** 2, dim=-1) + self.eps)
+        # else:
+        #     o_pt_dists = torch.sqrt(torch.sum(self.act_quantizer_opt(o_pt) ** 2, dim=-1) + self.eps)
+        o_pt_dists = torch.sqrt(torch.sum(o_pt ** 2, dim=-1) + self.eps)
         # print(o_pt_dists.shape)     # torch.Size([1, 100, 8, 12])
         o_pt_norm_feats = flatten_final_dims(
             o_pt_dists, 2)
@@ -607,6 +718,17 @@ class QuantIPA(BaseQuantBlock):
         o_pair = flatten_final_dims(o_pair, 2)
 
         o_feats = [o, *torch.unbind(o_pt, dim=-1), o_pt_norm_feats, o_pair]
+        
+        # name = os.path.join(folder, f'o_{tag}.npy')
+        # np.save(name, o.detach().cpu().numpy())
+        # name = os.path.join(folder, f'o_pt_{tag}.npy')
+        # np.save(name, o_pt.detach().cpu().numpy())
+        # name = os.path.join(folder, f'o_pt_norm_{tag}.npy')
+        # np.save(name, o_pt_norm_feats.detach().cpu().numpy())
+        # name = os.path.join(folder, f'a_pair_{tag}.npy')
+        # np.save(name, o_pair.detach().cpu().numpy())
+        
+        
         # print(torch.cat(
         #         o_feats, dim=-1
         #     ).shape)        # torch.Size([1, 100, 2688])
@@ -622,6 +744,8 @@ class QuantIPA(BaseQuantBlock):
             ) * mask[..., None]
 
         # print('==========finish ipa===============')
+        # name = os.path.join(folder, f's_{tag}.npy')
+        # np.save(name, s.detach().cpu().numpy())
         return s    
         
     def set_quant_state(self, weight_quant: bool = False, act_quant: bool = False):
@@ -631,7 +755,8 @@ class QuantIPA(BaseQuantBlock):
         for m in self.modules():
             if isinstance(m, QuantModule):
                 m.set_quant_state(weight_quant, act_quant)
-                
+        
+                        
 class QuantTransformerEncoderLayer(BaseQuantBlock):
     def __init__(self, enc: TransformerEncoderLayer, act_quant_params: dict = {}, weight_quant_params: dict={},
             sm_abit: int = 8):
@@ -684,23 +809,56 @@ class QuantTransformerEncoderLayer(BaseQuantBlock):
                     self.self_attn.in_proj, weight_quant_params, act_quant_params))
         # self.self_attn.w_quantizer_out = UniformAffineQuantizer(**weight_quant_params)
 
+
     def forward(self, src, src_mask: Optional[torch.Tensor],
                 src_key_padding_mask: Optional[torch.Tensor]) -> torch.Tensor:
                 # src_key_padding_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         # print(self.name)
         # print('======goes tel==========')
+        # tag = time.time()
+        # if self.use_act_quant or self.use_weight_quant:
+        #     folder = os.path.join('dist-1tel-fix-bug', 'int')
+        #     os.makedirs(folder, exist_ok=True)
+        # else:
+        #     folder = os.path.join('dist-1tel-fix-bug', 'fp')
+        #     os.makedirs(folder, exist_ok=True)
+        # name = os.path.join(folder, f'src_{tag}.npy')
+        # np.save(name, src.detach().cpu().numpy())
+        # name = os.path.join(folder, f'src_mask_{tag}.npy')
+        # np.save(name, src_mask.detach().cpu().numpy())
+        # print(self.norm_first)    # False
         x = src
-        if self.norm_first:         # False
-            x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask)
-            x = x + self._ff_block(self.norm2(x))
+        if len(src_mask.shape) == len(x.shape):
+            if self.norm_first:         
+                x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask) * src_mask[:x.shape[0], :, 0][..., None] 
+                x = x + self._ff_block(self.norm2(x), src_mask) * src_mask[:x.shape[0], :, 0][..., None] 
+            else:
+                x = self.norm1(x + self._sa_block(x, src_mask, src_key_padding_mask) * src_mask[:x.shape[0], :, 0][..., None])
+                # name = os.path.join(folder, f'x_sa_{tag}.npy')
+                # np.save(name, x.detach().cpu().numpy())
+                x = self.norm2(x + self._ff_block(x, src_mask) * src_mask[:x.shape[0], :, 0][..., None])
+                # name = os.path.join(folder, f'x_ff_{tag}.npy')
+                # np.save(name, x.detach().cpu().numpy())
+        
         else:
-            x = self.norm1(x + self._sa_block(x, src_mask, src_key_padding_mask))
-            x = self.norm2(x + self._ff_block(x))
+            if self.norm_first:         
+                x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask) * src_mask[..., None]
+                x = x + self._ff_block(self.norm2(x), src_mask) * src_mask[..., None]
+            else:
+                x = self.norm1(x + self._sa_block(x, src_mask, src_key_padding_mask) * src_mask[..., None])
+                # name = os.path.join(folder, f'x_sa_{tag}.npy')
+                # np.save(name, x.detach().cpu().numpy())
+                x = self.norm2(x + self._ff_block(x, src_mask) * src_mask[..., None])
+                # name = os.path.join(folder, f'x_ff_{tag}.npy')
+                # np.save(name, x.detach().cpu().numpy())
+        # print(x.shape, src_mask.shape)
         
         if len(src_mask.shape) == len(x.shape):
-            x *=  src_mask[x.shape[0], :, 0][..., None]
+            x *=  src_mask[:x.shape[0], :, 0][..., None]         # Fix bug
         else:
             x *= src_mask[..., None]
+        # name = os.path.join(folder, f'x_out_{tag}.npy')
+        # np.save(name, x.detach().cpu().numpy())
         return x
     
     def _sa_block(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor], 
@@ -710,8 +868,11 @@ class QuantTransformerEncoderLayer(BaseQuantBlock):
                            need_weights=False)      # [0]  self impl only return one variable
         return self.dropout1(x)
     
-    def _ff_block(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+    def _ff_block(self, x: torch.Tensor, src_mask) -> torch.Tensor:
+        if len(src_mask.shape) == len(x.shape):
+            x = self.linear2(self.dropout(self.activation(self.linear1(x)) * src_mask[:x.shape[0], :, 0][..., None]))
+        else:
+            x = self.linear2(self.dropout(self.activation(self.linear1(x)) * src_mask[..., None]))
         return self.dropout2(x)
     
     def set_quant_state(self, weight_quant: bool = False, act_quant: bool = False):
@@ -725,7 +886,35 @@ class QuantTransformerEncoderLayer(BaseQuantBlock):
             if isinstance(m, QuantModule):
                 m.set_quant_state(weight_quant, act_quant)
                         
+class QuantTransformerEncoder(BaseQuantBlock):
+    def __init__(self, teall: TransformerEncoder, act_quant_params: dict = {}, weight_quant_params: dict={},
+            sm_abit: int = 8):
+        super().__init__(act_quant_params)
+        self.use_weight_quant = True
+        self.use_act_quant = False
+        self.name = 'quantteall'
+        self.num_layers = teall.num_layers
+        self.layers = teall.layers
+        self.sm_abit = sm_abit
+        # for idx in range(len(self.layers)):
+        #     setattr(module, str(idx), QuantTransformerEncoderLayer(child_module,
+        #                 act_quant_params, weight_quant_params, sm_abit=self.sm_abit))
+ 
+    def forward(self, src, mask: Optional[torch.Tensor],
+                src_key_padding_mask: Optional[torch.Tensor] = None):
+        output = src
+        for mod in self.layers:
+            output = mod(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask)
+        return output
+     
+    def set_quant_state(self, weight_quant: bool = False, act_quant: bool = False):
+        self.use_act_quant = act_quant
+        self.use_weight_quant = weight_quant
 
+        for m in self.layers():
+            m.set_quant_state(weight_quant, act_quant)   
+            
+            
 class QuantResBlock(BaseQuantBlock, TimestepBlock):
     def __init__(
         self, res: ResBlock, act_quant_params: dict = {}):

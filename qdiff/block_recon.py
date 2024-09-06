@@ -3,7 +3,7 @@ import torch
 import logging
 from qdiff.quant_layer import QuantModule, StraightThrough, lp_loss
 from qdiff.quant_model import QuantModel
-from qdiff.quant_block import BaseQuantBlock
+from qdiff.quant_block import BaseQuantBlock, QuantEmbedder
 from qdiff.adaptive_rounding import AdaRoundQuantizer
 from qdiff.utils import save_grad_data, save_inp_oup_data
 from openfold.utils.rigid_utils import Rigid, Rotation
@@ -43,6 +43,9 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
     block.set_quant_state(True, act_quant)
     round_mode = 'learned_hard_sigmoid'
     print('===222222===block recon: ', act_quant, block.use_act_quant)      # False False
+    if isinstance(block, QuantEmbedder):
+        block.set_quant_state(True, False)
+        # print('--------block set--------')
     
     if not include_act_func:
         org_act_func = block.activation_function
@@ -125,7 +128,6 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
         optimizer = torch.optim.Adam(opt_params)
         scheduler = None
     else:
-        # TODO IPA impl
         # second loop, act_quant = True
         # Use UniformAffineQuantizer to learn delta
         if hasattr(block.act_quantizer, 'delta') and block.act_quantizer.delta is not None:
@@ -147,12 +149,18 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
             opt_params += [
                 block.act_quantizer_q.delta,
                 block.act_quantizer_k.delta,
-                block.act_quantizer_ptdisp.delta,
+                # block.act_quantizer_ptdisp.delta,
                 block.act_quantizer_aupd.delta,
                 block.act_quantizer_v.delta,
                 block.act_quantizer_vpts.delta,
-                block.act_quantizer_opt.delta,
+                # block.act_quantizer_opt.delta,
                 block.act_quantizer_pairz.delta,]
+            
+            # opt_params += [
+            #     block.item_1,
+            #     block.item_2,
+            #     block.item_3,
+            # ]
             
         for name, module in block.named_modules():
             if isinstance(module, QuantModule):
@@ -186,7 +194,7 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
     # cached_inps, cached_outs = save_inp_oup_data(
         # model, block, cali_data, asym, act_quant, batch_size, keep_gpu=False, cond=cond, is_sm=is_sm)
     # print(f'block rec: {block}')
-    sio_bs = 8       # too large would cause OOM
+    sio_bs = 2       # too large would cause OOM
     
     # import pickle
     # with open('./debugs/train/encoder/cali_data.pkl', 'wb') as f:
@@ -226,6 +234,10 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
     for i in range(iters):
         if isinstance(cached_inps, list):
             idx = torch.randperm(cached_inps[0].size(0))[:batch_size]
+            # idx = torch.arange(cached_inps[0].size(0))[i*batch_size:(i+1)*batch_size]
+            # idx[0] = 145
+            # idx[1] = 55
+            # print(idx)
             if block.name == 'quanttel' or block.name == 'quantet':
                 cur_node = cached_inps[0][idx].to(device)
                 # src_key_padding_mask = cached_inps[1][idx].to(device)
@@ -258,12 +270,14 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
             # print('out:', cur_out)      # all nan, random sampled from whole, only first is ok
         elif isinstance(cached_outs, list):
             idx = torch.randperm(cached_outs[0].size(0))[:batch_size]
+            # idx = torch.arange(cached_outs[0].size(0))[i*batch_size:(i+1)*batch_size]
             cur_inp = cached_inps[idx].to(device)
             unnor = cached_outs[0][idx].to(device)   # 560
             nor = cached_outs[1][idx].to(device)
             cur_out = (unnor, nor)
         else:
             idx = torch.randperm(cached_inps.size(0))[:batch_size]
+            # idx = torch.arange(cached_inps.size(0))[i*batch_size:(i+1)*batch_size]
             cur_inp = cached_inps[idx].to(device)
             cur_out = cached_outs[idx].to(device)
         # TODO cur_grad is for what         # 一阶展开误差
@@ -309,7 +323,8 @@ def block_reconstruction(cali_data, model: QuantModel, block: BaseQuantBlock, de
         # with open('cur_inp.pkl', 'wb') as f:
         #     pickle.dump(cur_inp, f)
         # exit(0)
-            
+        
+        # print(out_quant, cur_out, cur_inp)    
         err = loss_func(out_quant, cur_out, cur_grad)
         err.backward(retain_graph=True)
         if multi_gpu:
